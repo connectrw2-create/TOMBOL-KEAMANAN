@@ -1,0 +1,12 @@
+packages:
+  - .
+
+onlyBuiltDependencies:
+  - "@swc/core"
+  - "@tailwindcss/oxide"
+  - esbuild
+
+allowBuilds:
+  "@swc/core": true
+  core-js: true
+  esbuild: true
