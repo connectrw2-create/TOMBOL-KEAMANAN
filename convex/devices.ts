@@ -43,6 +43,49 @@ export const createDevice = mutation({
   },
 });
 
+/**
+ * Klaim device yang Device ID + Pairing Code-nya SUDAH di-generate sendiri
+ * oleh perangkat (bukan lagi server yang generate lebih dulu). User tinggal
+ * salin/scan ID+kode yang tertampil di halaman setup AP device, lalu daftar
+ * di sini. Pengaman: kalau deviceId ini SUDAH pernah diklaim (oleh siapa
+ * pun), ditolak -- mencegah 1 device fisik diklaim dobel oleh 2 akun.
+ */
+export const claimDevice = mutation({
+  args: { deviceId: v.string(), pairingCode: v.string(), name: v.string() },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (!userId) throw new ConvexError({ message: "Not authenticated", code: "UNAUTHENTICATED" });
+
+    const deviceId = args.deviceId.trim();
+    const pairingCode = args.pairingCode.trim();
+    const name = args.name.trim();
+    if (!deviceId || !pairingCode) {
+      throw new ConvexError({ message: "Device ID dan Pairing Code wajib diisi.", code: "INVALID_INPUT" });
+    }
+
+    const existing = await ctx.db
+      .query("devices")
+      .withIndex("by_device_id", (q) => q.eq("deviceId", deviceId))
+      .first();
+    if (existing) {
+      throw new ConvexError({
+        message: "Device ini sudah terdaftar sebelumnya. Kalau ini device Anda sendiri, cek daftar device yang sudah ada -- atau hubungi admin kalau merasa ini keliru.",
+        code: "ALREADY_CLAIMED",
+      });
+    }
+
+    const id = await ctx.db.insert("devices", {
+      userId,
+      deviceId,
+      name: name || "Device Saya",
+      pairingCode,
+      isOnline: false,
+      deviceType: "personal",
+    });
+    return { id };
+  },
+});
+
 export const getMyDevices = query({
   args: {},
   handler: async (ctx) => {

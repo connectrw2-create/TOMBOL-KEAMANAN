@@ -202,7 +202,7 @@ function DeviceCard({
               );
             })}
           </div>
-          <p className="text-[9px] text-muted-foreground">Aktifkan HANYA kalau modul sensor sudah dipasang fisik di device ini (lihat panduan firmware).</p>
+          <p className="text-[9px] text-muted-foreground">Aktifkan HANYA kalau modul sensor sudah dipasang fisik di device ini.</p>
         </div>
       )}
 
@@ -225,11 +225,16 @@ function DevicesList() {
   const navigate = useNavigate();
   const devices = useQuery(api.devices.getMyDevices, {});
   const createDevice = useMutation(api.devices.createDevice);
+  const claimDevice = useMutation(api.devices.claimDevice);
   const deleteDevice = useMutation(api.devices.deleteDevice);
   const regenCode = useMutation(api.devices.regeneratePairingCode);
 
   const [showAdd, setShowAdd] = useState(false);
+  const [addMode, setAddMode] = useState<"auto" | "claim">("claim");
   const [newName, setNewName] = useState("");
+  const [claimId, setClaimId] = useState("");
+  const [claimCode, setClaimCode] = useState("");
+  const [showClaimScanner, setShowClaimScanner] = useState(false);
   const [adding, setAdding] = useState(false);
   const [selectedQR, setSelectedQR] = useState<DeviceDoc | null>(null);
 
@@ -253,6 +258,37 @@ function DevicesList() {
       setShowAdd(false);
     } catch {
       toast.error("Gagal menambahkan perangkat.");
+    } finally {
+      setAdding(false);
+    }
+  };
+
+  const handleClaimScan = (raw: string) => {
+    setShowClaimScanner(false);
+    try {
+      const parsed = JSON.parse(raw);
+      if (typeof parsed?.deviceId === "string" && typeof parsed?.pairingCode === "string") {
+        setClaimId(parsed.deviceId);
+        setClaimCode(parsed.pairingCode);
+        toast.success("QR terbaca. Cek nama & tekan Daftarkan.");
+        return;
+      }
+    } catch {
+      // bukan format QR device yang dikenal
+    }
+    toast.error("QR ini bukan QR pairing device yang valid.");
+  };
+
+  const handleClaim = async () => {
+    if (!newName.trim() || !claimId.trim() || !claimCode.trim()) return;
+    setAdding(true);
+    try {
+      await claimDevice({ deviceId: claimId.trim(), pairingCode: claimCode.trim(), name: newName.trim() });
+      toast.success(`Perangkat "${newName}" berhasil didaftarkan.`);
+      setNewName(""); setClaimId(""); setClaimCode("");
+      setShowAdd(false);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Gagal mendaftarkan perangkat. Pastikan Device ID & Pairing Code benar dan belum pernah didaftarkan.");
     } finally {
       setAdding(false);
     }
@@ -287,18 +323,66 @@ function DevicesList() {
             exit={{ opacity: 0, height: 0 }}
           >
             <p className="font-bold text-sm text-foreground">Tambah Perangkat Wemos D1</p>
+            <div className="flex gap-1.5 bg-background rounded-lg p-1">
+              <button
+                onClick={() => setAddMode("auto")}
+                className={`flex-1 py-1.5 rounded-md text-xs font-bold transition-colors cursor-pointer ${addMode === "auto" ? "bg-primary text-primary-foreground" : "text-muted-foreground"}`}
+              >
+                Generate Otomatis
+              </button>
+              <button
+                onClick={() => setAddMode("claim")}
+                className={`flex-1 py-1.5 rounded-md text-xs font-bold transition-colors cursor-pointer ${addMode === "claim" ? "bg-primary text-primary-foreground" : "text-muted-foreground"}`}
+              >
+                Device Sudah Punya ID
+              </button>
+            </div>
             <Input
               value={newName}
               onChange={(e) => setNewName(e.target.value)}
-              placeholder={'Contoh: "Pos Ronda RT 03"'}
+              placeholder={'Nama, contoh: "Pos Ronda RT 03"'}
               className="bg-background border-border"
-              onKeyDown={(e) => e.key === "Enter" && handleAdd()}
+              onKeyDown={(e) => e.key === "Enter" && addMode === "auto" && handleAdd()}
               autoFocus
             />
+            {addMode === "claim" && (
+              <>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => setShowClaimScanner(true)}
+                  className="w-full gap-2 border border-dashed border-primary/40"
+                >
+                  <QrCode className="size-4" /> Scan QR di Perangkat
+                </Button>
+                <p className="text-[10px] text-muted-foreground text-center">atau isi manual di bawah ini</p>
+                <Input
+                  value={claimId}
+                  onChange={(e) => setClaimId(e.target.value)}
+                  placeholder="Device ID (dari layar setup perangkat)"
+                  className="bg-background border-border font-mono"
+                />
+                <Input
+                  value={claimCode}
+                  onChange={(e) => setClaimCode(e.target.value)}
+                  placeholder="Pairing Code (dari layar setup perangkat)"
+                  className="bg-background border-border font-mono"
+                  onKeyDown={(e) => e.key === "Enter" && handleClaim()}
+                />
+                <p className="text-[10px] text-muted-foreground">Salin persis dari halaman setup WiFi perangkat (tap 5x tombol PANIC untuk membukanya).</p>
+              </>
+            )}
             <div className="flex gap-2">
-              <Button size="sm" onClick={handleAdd} disabled={adding || !newName.trim()} className="flex-1">
-                {adding ? "Menambahkan..." : "Tambahkan"}
-              </Button>
+              {addMode === "auto" ? (
+                <Button size="sm" onClick={handleAdd} disabled={adding || !newName.trim()} className="flex-1">
+                  {adding ? "Menambahkan..." : "Tambahkan"}
+                </Button>
+              ) : (
+                <Button size="sm" onClick={handleClaim} disabled={adding || !newName.trim() || !claimId.trim() || !claimCode.trim()} className="flex-1">
+                  {adding ? "Mendaftarkan..." : "Daftarkan"}
+                </Button>
+              )}
               <Button size="sm" variant="ghost" onClick={() => setShowAdd(false)}>Batal</Button>
             </div>
           </motion.div>
@@ -330,21 +414,18 @@ function DevicesList() {
         </Button>
       )}
 
-      <button
-        onClick={() => navigate("/firmware")}
-        className="w-full flex items-center justify-between px-4 py-3 rounded-xl bg-primary/5 border border-primary/20 hover:bg-primary/10 transition-colors cursor-pointer"
-      >
-        <div className="flex items-center gap-3">
-          <Code2 className="size-4 text-primary" />
-          <div className="text-left">
-            <p className="text-sm font-bold text-primary">Firmware Wemos D1</p>
-            <p className="text-xs text-muted-foreground">Kode Arduino + skema rangkaian + panduan</p>
-          </div>
+      <div className="w-full flex items-center gap-3 px-4 py-3 rounded-xl bg-muted/50 border border-border">
+        <Code2 className="size-4 text-muted-foreground flex-shrink-0" />
+        <div className="text-left">
+          <p className="text-sm font-bold text-foreground">Butuh firmware Wemos D1?</p>
+          <p className="text-xs text-muted-foreground">Hubungi admin untuk mendapatkan firmware terbaru & panduan pemasangan.</p>
         </div>
-        <ArrowLeft className="size-4 text-primary rotate-180" />
-      </button>
+      </div>
 
       {selectedQR && <QRModal device={selectedQR} onClose={() => setSelectedQR(null)} />}
+      {showClaimScanner && (
+        <QRScannerModal title="Scan QR Perangkat" onScan={handleClaimScan} onClose={() => setShowClaimScanner(false)} />
+      )}
     </div>
   );
 }
@@ -546,9 +627,14 @@ function CommunityDeviceManager() {
     effectiveGroupId ? { groupId: effectiveGroupId } : "skip",
   );
   const registerDevice = useMutation(api.communityDevices.registerCommunityDevice);
+  const claimCommunityDevice = useMutation(api.communityDevices.claimCommunityDevice);
   const removeDevice = useMutation(api.communityDevices.removeCommunityDevice);
   const regenCode = useMutation(api.communityDevices.regenerateCommunityPairingCode);
   const setDeviceSensors = useMutation(api.devices.setDeviceSensors);
+  const [addMode, setAddMode] = useState<"auto" | "claim">("claim");
+  const [claimId, setClaimId] = useState("");
+  const [claimCode, setClaimCode] = useState("");
+  const [showClaimScanner, setShowClaimScanner] = useState(false);
 
   const toggleCommunitySensor = async (deviceId: Id<"devices">, current: Array<"door" | "fire" | "flood">, kind: "door" | "fire" | "flood") => {
     const next = current.includes(kind) ? current.filter((s) => s !== kind) : [...current, kind];
@@ -571,6 +657,34 @@ function CommunityDeviceManager() {
       setShowAdd(false);
     } catch {
       toast.error("Gagal mendaftarkan device.");
+    }
+  };
+
+  const handleClaimScan = (raw: string) => {
+    setShowClaimScanner(false);
+    try {
+      const parsed = JSON.parse(raw);
+      if (typeof parsed?.deviceId === "string" && typeof parsed?.pairingCode === "string") {
+        setClaimId(parsed.deviceId);
+        setClaimCode(parsed.pairingCode);
+        toast.success("QR terbaca. Cek nama lokasi & tekan Daftarkan.");
+        return;
+      }
+    } catch {
+      // bukan format QR device yang dikenal
+    }
+    toast.error("QR ini bukan QR pairing device yang valid.");
+  };
+
+  const handleClaim = async () => {
+    if (!newLabel.trim() || !effectiveGroupId || !claimId.trim() || !claimCode.trim()) return;
+    try {
+      await claimCommunityDevice({ groupId: effectiveGroupId, deviceId: claimId.trim(), pairingCode: claimCode.trim(), locationLabel: newLabel.trim() });
+      toast.success(`Device lokasi "${newLabel}" berhasil didaftarkan.`);
+      setNewLabel(""); setClaimId(""); setClaimCode("");
+      setShowAdd(false);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Gagal mendaftarkan device. Pastikan Device ID & Pairing Code benar dan belum pernah didaftarkan.");
     }
   };
 
@@ -678,16 +792,62 @@ function CommunityDeviceManager() {
             animate={{ opacity: 1, height: "auto" }}
             exit={{ opacity: 0, height: 0 }}
           >
+            <div className="flex gap-1.5 bg-card rounded-lg p-1">
+              <button
+                onClick={() => setAddMode("auto")}
+                className={`flex-1 py-1.5 rounded-md text-xs font-bold transition-colors cursor-pointer ${addMode === "auto" ? "bg-primary text-primary-foreground" : "text-muted-foreground"}`}
+              >
+                Generate Otomatis
+              </button>
+              <button
+                onClick={() => setAddMode("claim")}
+                className={`flex-1 py-1.5 rounded-md text-xs font-bold transition-colors cursor-pointer ${addMode === "claim" ? "bg-primary text-primary-foreground" : "text-muted-foreground"}`}
+              >
+                Device Sudah Punya ID
+              </button>
+            </div>
             <Input
               value={newLabel}
               onChange={(e) => setNewLabel(e.target.value)}
               placeholder='Contoh: "Pos Satpam Blok A"'
               className="bg-card border-border"
-              onKeyDown={(e) => e.key === "Enter" && handleAdd()}
+              onKeyDown={(e) => e.key === "Enter" && addMode === "auto" && handleAdd()}
               autoFocus
             />
+            {addMode === "claim" && (
+              <>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => setShowClaimScanner(true)}
+                  className="w-full gap-2 border border-dashed border-primary/40"
+                >
+                  <QrCode className="size-4" /> Scan QR di Perangkat
+                </Button>
+                <p className="text-[10px] text-muted-foreground text-center">atau isi manual di bawah ini</p>
+                <Input
+                  value={claimId}
+                  onChange={(e) => setClaimId(e.target.value)}
+                  placeholder="Device ID (dari layar setup perangkat)"
+                  className="bg-card border-border font-mono"
+                />
+                <Input
+                  value={claimCode}
+                  onChange={(e) => setClaimCode(e.target.value)}
+                  placeholder="Pairing Code (dari layar setup perangkat)"
+                  className="bg-card border-border font-mono"
+                  onKeyDown={(e) => e.key === "Enter" && handleClaim()}
+                />
+                <p className="text-[10px] text-muted-foreground">Salin persis dari halaman setup WiFi perangkat (tap 5x tombol PANIC untuk membukanya).</p>
+              </>
+            )}
             <div className="flex gap-2">
-              <Button size="sm" onClick={handleAdd} disabled={!newLabel.trim()} className="flex-1">Daftarkan</Button>
+              {addMode === "auto" ? (
+                <Button size="sm" onClick={handleAdd} disabled={!newLabel.trim()} className="flex-1">Daftarkan</Button>
+              ) : (
+                <Button size="sm" onClick={handleClaim} disabled={!newLabel.trim() || !claimId.trim() || !claimCode.trim()} className="flex-1">Daftarkan</Button>
+              )}
               <Button size="sm" variant="ghost" onClick={() => setShowAdd(false)}>Batal</Button>
             </div>
           </motion.div>
@@ -701,6 +861,9 @@ function CommunityDeviceManager() {
       )}
 
       {selectedQR && <QRModal device={selectedQR} onClose={() => setSelectedQR(null)} />}
+      {showClaimScanner && (
+        <QRScannerModal title="Scan QR Perangkat" onScan={handleClaimScan} onClose={() => setShowClaimScanner(false)} />
+      )}
     </div>
   );
 }
@@ -740,7 +903,7 @@ function DeviceQRScanResultModal({
             </button>
           </div>
           <p className="text-xs text-muted-foreground">
-            Tinggal salin dua nilai ini ke kode firmware Arduino (DEVICE_ID & PAIRING_CODE) di halaman Firmware.
+            Salin dua nilai ini ke pengaturan WiFi AP di perangkat (Device ID & Pairing Code).
           </p>
           <Button onClick={onClose} className="w-full">Selesai</Button>
         </div>

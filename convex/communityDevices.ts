@@ -50,6 +50,55 @@ export const registerCommunityDevice = mutation({
   },
 });
 
+/**
+ * Versi komunal dari claimDevice (devices.ts) -- device sudah generate ID+
+ * Pairing Code sendiri, admin grup tinggal daftarkan ke lokasi/grup tertentu.
+ * Pengaman anti-klaim-ganda sama seperti versi personal.
+ */
+export const claimCommunityDevice = mutation({
+  args: {
+    groupId: v.id("groups"),
+    deviceId: v.string(),
+    pairingCode: v.string(),
+    locationLabel: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (!userId) throw new ConvexError({ message: "Not authenticated", code: "UNAUTHENTICATED" });
+    await assertGroupAdmin(ctx, userId, args.groupId);
+
+    const deviceId = args.deviceId.trim();
+    const pairingCode = args.pairingCode.trim();
+    const locationLabel = args.locationLabel.trim();
+    if (!deviceId || !pairingCode || !locationLabel) {
+      throw new ConvexError({ message: "Device ID, Pairing Code, dan Nama Lokasi wajib diisi.", code: "INVALID_INPUT" });
+    }
+
+    const existing = await ctx.db
+      .query("devices")
+      .withIndex("by_device_id", (q) => q.eq("deviceId", deviceId))
+      .first();
+    if (existing) {
+      throw new ConvexError({
+        message: "Device ini sudah terdaftar sebelumnya. Pastikan Device ID/Pairing Code disalin dari perangkat yang benar (yang belum pernah didaftarkan).",
+        code: "ALREADY_CLAIMED",
+      });
+    }
+
+    const id = await ctx.db.insert("devices", {
+      userId,
+      deviceId,
+      name: locationLabel,
+      pairingCode,
+      isOnline: false,
+      deviceType: "community",
+      locationLabel,
+      groupId: args.groupId,
+    });
+    return { id };
+  },
+});
+
 export const getGroupCommunityDevices = query({
   args: { groupId: v.id("groups") },
   handler: async (ctx, args) => {
