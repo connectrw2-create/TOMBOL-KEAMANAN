@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import jsQR from "jsqr";
-import { X, ScanLine } from "lucide-react";
+import { X, ScanLine, Image as GalleryIcon } from "lucide-react";
 
 interface QRScannerModalProps {
   onScan: (data: string) => void;
@@ -9,18 +9,34 @@ interface QRScannerModalProps {
   title?: string;
 }
 
+// Gambar dari galeri (terutama foto kamera HP) bisa sangat besar (4000x3000+).
+// Menggambar itu ke canvas seukuran aslinya boros memori & lambat tanpa
+// menambah keakuratan decode QR sama sekali -- QR tetap terbaca jelas pada
+// resolusi yang jauh lebih kecil. Dibatasi ke sisi terpanjang maksimal ini.
+const MAX_DECODE_DIMENSION = 1600;
+
 /**
- * Fullscreen camera scanner. Requests camera permission explicitly via
- * getUserMedia (browser prompt is unavoidable and required — we never try
- * to bypass it). Stops the camera stream the moment a code is found or the
- * modal closes, so the camera is never left running longer than needed.
+ * Fullscreen scanner untuk QR pairing perangkat.
+ *
+ * Mendukung DUA cara input:
+ *  1) Kamera langsung (live, seperti sebelumnya) via getUserMedia.
+ *  2) Pilih gambar dari galeri/berkas -- dipakai saat QR device ditampilkan
+ *     di HP lain dan sudah disimpan sebagai gambar (lihat tombol "Simpan QR
+ *     ke Galeri" di halaman setup perangkat), jadi pairing tidak perlu 2 HP
+ *     sekaligus (satu menampilkan QR "hidup", satu lagi mengarahkan kamera).
+ *
+ * Kamera dihentikan begitu kode ditemukan atau modal ditutup, sama seperti
+ * sebelumnya -- opsi galeri tidak mengubah perilaku itu.
  */
 export function QRScannerModal({ onScan, onClose, title = "Pindai Kode QR" }: QRScannerModalProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const rafRef = useRef<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [galleryError, setGalleryError] = useState<string | null>(null);
+  const [decodingFile, setDecodingFile] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -41,7 +57,7 @@ export function QRScannerModal({ onScan, onClose, title = "Pindai Kode QR" }: QR
         }
         scanLoop();
       } catch {
-        setError("Tidak bisa mengakses kamera. Pastikan izin kamera diizinkan di browser.");
+        setError("Tidak bisa mengakses kamera. Pastikan izin kamera diizinkan di browser, atau pilih gambar QR dari galeri.");
       }
     }
 
@@ -79,6 +95,54 @@ export function QRScannerModal({ onScan, onClose, title = "Pindai Kode QR" }: QR
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  function handlePickFromGallery() {
+    setGalleryError(null);
+    fileInputRef.current?.click();
+  }
+
+  function handleFileSelected(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    // Reset value supaya memilih file yang sama dua kali tetap memicu onChange.
+    e.target.value = "";
+    if (!file) return;
+
+    setGalleryError(null);
+    setDecodingFile(true);
+
+    const objectUrl = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      try {
+        const scale = Math.min(1, MAX_DECODE_DIMENSION / Math.max(img.width, img.height));
+        const canvas = canvasRef.current ?? document.createElement("canvas");
+        canvas.width = Math.max(1, Math.round(img.width * scale));
+        canvas.height = Math.max(1, Math.round(img.height * scale));
+        const ctx = canvas.getContext("2d");
+        if (!ctx) {
+          setGalleryError("Tidak bisa memproses gambar ini di browser.");
+          return;
+        }
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const code = jsQR(imageData.data, imageData.width, imageData.height);
+        if (code && code.data) {
+          onScan(code.data);
+        } else {
+          setGalleryError("Tidak ada kode QR yang terbaca dari gambar ini. Coba gambar lain yang lebih jelas/tidak terpotong.");
+        }
+      } finally {
+        URL.revokeObjectURL(objectUrl);
+        setDecodingFile(false);
+      }
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      setDecodingFile(false);
+      setGalleryError("Gagal membuka file ini sebagai gambar.");
+    };
+    img.src = objectUrl;
+  }
+
   return createPortal(
     <div className="fixed inset-0 z-[100] bg-black flex flex-col">
       <div className="flex items-center justify-between px-4 py-3 bg-black/80">
@@ -103,9 +167,31 @@ export function QRScannerModal({ onScan, onClose, title = "Pindai Kode QR" }: QR
 
       <canvas ref={canvasRef} className="hidden" />
 
-      <p className="text-white/60 text-xs text-center pb-6 px-6">
-        Arahkan kamera ke kode QR
-      </p>
+      <div className="px-6 pb-6 pt-2 flex flex-col items-center gap-3">
+        <p className="text-white/60 text-xs text-center">
+          {error ? "Kamera tidak tersedia — pilih gambar QR dari galeri sebagai gantinya." : "Arahkan kamera ke kode QR, atau pilih gambar QR yang sudah tersimpan."}
+        </p>
+
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/*"
+          className="hidden"
+          onChange={handleFileSelected}
+        />
+        <button
+          onClick={handlePickFromGallery}
+          disabled={decodingFile}
+          className="flex items-center gap-2 px-4 py-2.5 rounded-full bg-white/10 text-white text-sm font-medium border border-white/20 disabled:opacity-60 cursor-pointer"
+        >
+          <GalleryIcon className="size-4" />
+          {decodingFile ? "Memproses gambar..." : "Pilih dari Galeri"}
+        </button>
+
+        {galleryError && (
+          <p className="text-red-400 text-xs text-center px-4">{galleryError}</p>
+        )}
+      </div>
     </div>,
     document.body,
   );
